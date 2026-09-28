@@ -121,7 +121,8 @@ done
 # optional: the KVarN 4/2-bit KV cache for 262k context (docs/long-context.md)
 bash kvarn/install.sh
 
-# api key — optional, but the server binds 0.0.0.0 and is open without one
+# api key — optional on one machine: with no key the launchers bind 127.0.0.1 only. To serve other
+# machines, set a key (they then bind 0.0.0.0) or set HOST explicitly.
 openssl rand -hex 24 > api_key.txt
 ```
 

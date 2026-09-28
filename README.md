@@ -50,7 +50,7 @@ docker compose --profile batch  up -d     # API backend, many concurrent request
 First start pulls the image (9.5 GB) and requantizes the model (~20 GB, once,
 into `./models`), then serves on `:18020`. One GPU runs one mode at a time.
 
-- **Before exposing it** — the server binds `0.0.0.0` with no auth:
+- **Before exposing it** — in the container the server binds `0.0.0.0`, with no auth unless you set a key (outside a container, no key means it binds `127.0.0.1` only):
   `echo "VLLM_API_KEY=$(openssl rand -hex 24)" >> .env`
 - **Docker Desktop on WSL2** — keep `VLLM_WSL2_ENABLE_PIN_MEMORY=1` in `.env`, or
   the V2 runner aborts with `RuntimeError: UVA is not available`

@@ -324,9 +324,18 @@ else warn "no DFlash2 drafter (venv/bin/python prepare/fetch_dflash2.py; SPEC=df
 echo "== keys / units"
 # A key is optional: with neither api_key.txt nor VLLM_API_KEY the launchers export
 # nothing and vLLM serves unauthenticated, which is a fine way to run this locally.
-# Worth a WARN rather than silence only because both launchers bind 0.0.0.0.
-[ -s api_key.txt ] || [ -n "${VLLM_API_KEY:-}" ] && ok "API key configured (api_key.txt or VLLM_API_KEY)" \
-  || warn "no API key — the server will accept any request, and it listens on 0.0.0.0. Fine behind a firewall; otherwise: openssl rand -hex 24 > api_key.txt"
+# With no key the launchers bind 127.0.0.1 (resolve_bind_host in resolve_api_key.sh), so that is a WARN.
+# It is a FAIL only when the bind is explicitly set off loopback (HOST=0.0.0.0 and no key). A container
+# keeps 0.0.0.0 by default, so a keyless container is a WARN: the published port is what limits it.
+if [ -s api_key.txt ] || [ -n "${VLLM_API_KEY:-}" ]; then ok "API key configured (api_key.txt or VLLM_API_KEY)"
+else
+  case "${HOST:-}" in
+    "") if [ -f /.dockerenv ]; then warn "no API key — this container listens on 0.0.0.0, so the published port is open to whatever can reach it. Set VLLM_API_KEY (make keygen) or publish the port on 127.0.0.1 only"
+        else warn "no API key — the server binds 127.0.0.1 only, so other machines cannot reach it. To serve them: openssl rand -hex 24 > api_key.txt"; fi ;;
+    127.*|localhost|::1) warn "no API key — HOST=$HOST keeps the server on this machine" ;;
+    *) fail "no API key and HOST=$HOST: anything that can reach this port can use the server. openssl rand -hex 24 > api_key.txt, or unset HOST" ;;
+  esac
+fi
 if [ -f /.dockerenv ]; then :; elif systemctl --user is-active qwen-serving >/dev/null 2>&1; then ok "systemd user unit qwen-serving active"; else warn "qwen-serving unit not active (fine if you launch the scripts by hand)"; fi
 # VLLM_SKIP_MODEL_NAME_VALIDATION looks like a fix for model-name 404s, but it
 # disables the check on every endpoint (/v1/chat/completions included): a
