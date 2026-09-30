@@ -164,6 +164,12 @@ other only loosely, and not rows for either table above:
   another request's mamba state), and four vLLM backports for evicted DFlash2
   conversations ([#208](https://github.com/syv-ai/HyperQwen/issues/208)). The
   "!!!!" fix is reworked in #222; the other seven are not in the series yet.
+  The reporter then tested #222 on 0.29 and on the 0.30 series: 0 NaN requests
+  with it on DFlash2 k=3 (320 replies, `bench/concurrent_collapse.py` 0 of 30,
+  544 pages dropped) and on the no-drafter config (480 replies, 262 pages
+  dropped). Without it, the no-drafter config still gave 1 NaN request in 480
+  on 0.29's V2 runner, much rarer than the ~0.8% of replies on 0.28's V1 runner,
+  and DFlash2 did not reproduce at all; why is not explained yet.
 - **2x RTX 3090, PCIe x8 without NVLink (TP=2)**: peer access through a
   community-patched driver lets vLLM's custom all-reduce run with the
   launcher's `expandable_segments:False` default. C1 greedy 207.5-211.9 tok/s
