@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Quick quality battery against the running server. Catches "benchmarks great,
 outputs garbage" in a minute — run it after every kernel/quant change.
-  1. perplexity over ~300-token windows: wikitext-2 test (en), fineweb-2 dan test (da),
+  1. perplexity over ~300-token windows: wikitext-2 test (en), fineweb-2 dan test (da;
+     QUALITY_LANG=por_Latn swaps in Portuguese, reported as pt),
      vLLM's own python source (code)
   2. GSM8K exact-match, 200 test questions, thinking off, greedy
 Data (once):
   hf download Salesforce/wikitext --repo-type dataset --include "wikitext-2-raw-v1/test-*" --local-dir bench/quality-data/wikitext
   hf download openai/gsm8k --repo-type dataset --include "main/test-*" --local-dir bench/quality-data/gsm8k
   hf download HuggingFaceFW/fineweb-2 --repo-type dataset --include "data/dan_Latn/test/000_00000.parquet" --local-dir bench/quality-data/fineweb2
+  (for QUALITY_LANG=por_Latn, the same with data/por_Latn/test/000_00000.parquet)
 Perplexity needs prompt_logprobs, which needs memory headroom: run the server with
 GPU_UTIL=0.93 for this (gotcha 10 in the README).
 
@@ -36,6 +38,9 @@ KEY = os.environ.get("VLLM_API_KEY") or _key(os.path.join(HERE, "..", "api_key.t
 API = os.environ.get("VLLM_API", "http://127.0.0.1:18020/v1")
 # data dir: wikitext-2 test parquet, fineweb-2 dan_Latn test parquet, gsm8k test parquet (see README)
 Q = os.environ.get("QUALITY_DATA", os.path.join(HERE, "quality-data"))
+# second-language corpus: a fineweb-2 subset; dan_Latn is what the published tables use
+LANG2 = os.environ.get("QUALITY_LANG", "dan_Latn")
+LANG2_TAG = {"dan_Latn": "da", "por_Latn": "pt"}.get(LANG2, LANG2.split("_")[0])
 tag = sys.argv[1]
 ppl_only = "--ppl-only" in sys.argv; gsm_only = "--gsm-only" in sys.argv
 gsm_n = int(sys.argv[sys.argv.index("--gsm-n")+1]) if "--gsm-n" in sys.argv else 200
@@ -50,12 +55,12 @@ def docs():
     t = pq.read_table(f"{Q}/wikitext/wikitext-2-raw-v1/test-00000-of-00001.parquet").column("text").to_pylist()
     txt = "".join(t); 
     for i in range(0, min(len(txt), 40*1200), 1200): out.append(("en", txt[i:i+1200]))
-    tb = pq.read_table(f"{Q}/fineweb2/data/dan_Latn/test/000_00000.parquet", columns=["text"]).column("text").to_pylist()
+    tb = pq.read_table(f"{Q}/fineweb2/data/{LANG2}/test/000_00000.parquet", columns=["text"]).column("text").to_pylist()
     random.Random(0).shuffle(tb)
     n=0
     for d in tb:
         if len(d) > 1500:
-            out.append(("da", d[:1200])); n+=1
+            out.append((LANG2_TAG, d[:1200])); n+=1
         if n>=40: break
     files = sorted(glob.glob(os.path.join(HERE, "..", "venv/lib/python3.12/site-packages/vllm/v1/core/*.py")))
     for f in files:
