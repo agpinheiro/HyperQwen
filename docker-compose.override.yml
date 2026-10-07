@@ -14,7 +14,9 @@ services:
     environment:
       SPEC: dflash2
       CTX: long
-      MAX_LEN: "131072"
+      # Context and pool, settable from .env as MAX_LEN_LONG / KV_MEM_LONG (not MAX_LEN / KV_MEM,
+      # which .env keeps for CTX=huge). The pool must hold MAX_LEN: ~40,926 bytes per token.
+      MAX_LEN: "${MAX_LEN_LONG:-131072}"
       KV_MEM: "${KV_MEM_LONG:-5583457484}"   # the launcher's CTX=long pin
       # One request at a time (the launcher's CTX=long default is 4). The pinned pool leaves
       # little room on a card that also runs the desktop; at 4 slots the extra graphs pushed
