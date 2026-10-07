@@ -5,6 +5,8 @@
 #   docker compose run --rm prepare           # just download + requantize the model
 #   docker compose run --rm single verify     # verify.sh inside the container
 #
+# Either profile also starts "llamaui": llama.cpp's chat UI on :8088 (UI_PORT).
+#
 # Knobs go in a .env file next to this file (never committed): VLLM_API_KEY=...,
 # and any of the start-script variables (CTX, KV, MAX_LEN, MAX_SEQS, GPU_UTIL, VISION,
 # SPEC_ATTN, DRAFT_TOKENS, EXTRA_ARGS, ...) — .env is passed straight into the
@@ -110,11 +112,33 @@ services:
     <<: *serve
     profiles: [single]
     command: single
+    networks:
+      default:
+        aliases: [vllm]   # what llamaui talks to, whichever mode is up
 
   batch:
     <<: *serve
     profiles: [batch]
     command: batch
+    networks:
+      default:
+        aliases: [vllm]
+
+  # llama.cpp's web UI (with its tokens/s readout) on :8088, started by either
+  # profile. A small stdlib proxy adapts vLLM to what the UI expects from
+  # llama-server; see llamaui/proxy.py. UI_PORT moves it; the vLLM API on
+  # :18020 is untouched.
+  llamaui:
+    build: ./llamaui
+    image: hyperqwen-llamaui:local
+    profiles: [single, batch]
+    restart: unless-stopped
+    environment:
+      UPSTREAM: "http://vllm:${PORT:-18020}"
+    volumes:
+      - ${MODELS_DIR:-./models}:/models:ro   # chat template + sampling defaults
+    ports:
+      - "${UI_PORT:-8088}:8080"
 
   # Second standalone engine on its own card (TP=1, same launcher, own
   # port). Inert unless --profile solo; needs GPU_COUNT=all in .env so the

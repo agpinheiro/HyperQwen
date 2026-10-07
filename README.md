@@ -53,10 +53,90 @@ into `./models`), then serves on `:18020`. One GPU runs one mode at a time.
 - **Before exposing it** — in the container the server binds `0.0.0.0`, with no auth unless you set a key (outside a container, no key means it binds `127.0.0.1` only):
   `echo "VLLM_API_KEY=$(openssl rand -hex 24)" >> .env`
 - **Docker Desktop on WSL2** — keep `VLLM_WSL2_ENABLE_PIN_MEMORY=1` in `.env`, or
-  the V2 runner aborts with `RuntimeError: UVA is not available`
+  the V2 runner aborts with `RuntimeError: UVA is not available`; and give WSL
+  enough RAM before the first start, see [below](#windows--wsl2-prepare-killed-with-exit-137)
+- **Chat UI** — either profile also serves llama.cpp's web UI on
+  [`http://localhost:8088`](http://localhost:8088) (`UI_PORT` in `.env` moves it),
+  tokens/s readout included. See [llama.cpp UI](#llamacpp-ui)
 - **No compose, or no Docker at all** —
   [docs/docker.md](docs/docker.md#plain-docker-no-compose) ·
   [docs/install.md](docs/install.md)
+
+### Windows / WSL2: `prepare` killed with exit 137
+
+On Docker Desktop the first start can die before the server ever loads, with the
+`prepare` container exiting **137** and a log that stops at:
+
+```
+== quant_lm_head.py (int8 lm_head)
+round-trip relative error: 0.0064
+docker/prepare.sh: line 82:    11 Killed                  python prepare/quant_lm_head.py "$BASE"
+```
+
+That is the Linux OOM killer, not the GPU. The requantization runs on the CPU, and
+`lm_head` alone is a 2.5 GB bf16 matrix that the script holds in fp32 together with
+several same-sized intermediates. WSL2 gets **half of the host's RAM** by default, so
+a 32 GB Windows machine gives Docker ~15.6 GB, which is not enough. Re-running does
+not help: every retry is killed at the same line.
+
+Fix: raise WSL's memory and swap in `%USERPROFILE%\.wslconfig`:
+
+```ini
+[wsl2]
+memory=24GB
+swap=24GB
+```
+
+then restart WSL from PowerShell:
+
+```powershell
+wsl --shutdown          # stops every WSL distro AND every running container
+# start Docker Desktop again, then check the new limit:
+docker info | Select-String "Total Memory"     # should now read ~23.5 GiB
+docker compose run --rm prepare                # resumes where it died
+```
+
+`prepare` is idempotent, so the ~20 GB download is not repeated. Measured on a
+32 GB host with one RTX 3090: at 15.6 GB, five kills in a row at the line above; at
+24 GB + 24 GB swap, the whole prepare finished (peak ~12 GB resident) and
+the server came up. On a 16 GB host, leave Windows ~4 GB and lean on swap (for
+example `memory=12GB`, `swap=24GB`): slower, but it should complete (not measured).
+More WSL2 notes: [docs/docker.md](docs/docker.md#wsl2-notes).
+
+### llama.cpp UI
+
+`docker compose --profile single up -d` also starts `llamaui`: the web UI that ships
+with llama-server, served on `:8088` and talking to vLLM through a small stdlib
+proxy ([llamaui/proxy.py](llamaui/proxy.py)). The UI is llama.cpp's own prebuilt
+release asset, pinned by version and sha256 in [llamaui/Dockerfile](llamaui/Dockerfile).
+
+The UI expects a few llama-server-only endpoints, and the proxy provides them:
+
+- **`GET /props`**: built from vLLM's `/v1/models` (context length) and the served
+  model's `chat_template.jinja` and `generation_config.json`, so the reasoning toggle
+  and the default sampling settings work.
+- **`timings` on every streamed chunk**: computed from wall-clock time and vLLM's
+  running token count (`continuous_usage_stats`). This is what shows **tokens/s**
+  under each answer.
+- **`delta.reasoning` → `delta.reasoning_content`**: thinking shows up in the UI's
+  reasoning block.
+
+llama-server features with no vLLM equivalent (slots, MCP/tools, stream resume,
+model load/unload) answer as a llama-server with that feature turned off would. If
+you set `VLLM_API_KEY`, enter the same key in the UI's settings; the proxy forwards
+it unchanged. It adds no measurable overhead: 225.5 tok/s through it against 226.8
+direct on the same greedy coding prompt.
+
+The tokens/s shown depends heavily on what you ask. With `SPEC=dflash2` the drafter
+is very good at code and much weaker on running text, and **reasoning is running
+text**. On one RTX 3090 (WSL2, 512-token answers, a single sample of 3 runs each):
+
+| | thinking off | thinking on |
+|---|---:|---:|
+| code, temp 0.6 | ~200 tok/s | ~107 tok/s |
+| prose | ~65–105 tok/s | ~90 tok/s |
+
+If the UI shows ~90 tok/s, look first at whether thinking is on.
 
 ## Which setup do I want?
 
