@@ -68,16 +68,25 @@ head 256 (target) and head 128 (DFlash2 drafter).
 One RTX 3090 that also drives the display, WSL2, `SPEC=dflash2`, temp 0, thinking
 off, 512-token answers, `MAX_LEN=262144`:
 
-| | code | prose | 8K ctx | 55K ctx |
-|---|---:|---:|---:|---:|
-| **q2_1** (pool 549,694) | 197.7 | 111.4 | 174.5 | 81.2 |
-| `CTX=huge` KVarN, KV_MEM trimmed (pool 263,663) | 203.8 | 106.9 | 125.1 | 45.1 |
-| `CTX=fast` int4, 65K context (reference) | 226.8 | 109.5 | | |
+| | code | prose |
+|---|---:|---:|
+| **q2_1** (pool 549,694) | 197.7 | 111.4 |
+| `CTX=huge` KVarN, KV_MEM trimmed (pool 263,663) | 203.8 | 106.9 |
+| `CTX=fast` int4, 65K context (reference) | 226.8 | 109.5 |
 
-The context columns are decode tok/s on a source-code prompt padded to that length,
-measured on the second of two runs. q2_1's cold prefill took 7.1 s at 8K and
-85.7 s at 55K (KVarN: 63.9 s at 55K). Shared GPU memory stayed at ~76 MiB, so
-nothing paged to system RAM.
+Decode tok/s on a source-code prompt padded to each length (second of two runs):
+
+| context | q2_1 | KVarN | q2_1 cold prefill | KVarN cold prefill |
+|---:|---:|---:|---:|---:|
+| 7K | 174.5 | 125.1 | 7.1 s | |
+| 55K | 81.2 | 45.1 | 85.7 s | 63.9 s |
+| 113K | 57.7 | 27.5 | 267 s | 157 s |
+| 237K | 34.9 | crashed | 945 s | |
+
+Shared GPU memory stayed under 160 MiB throughout, so nothing paged to system RAM.
+Cold prefill (a whole prompt at once into an empty cache) is q2_1's weak spot: the
+2D prefill kernel still has headroom. In a normal conversation, prefix caching keeps
+the history, so each turn prefills only its new input over the cached context.
 
 ## Quality
 
@@ -91,7 +100,17 @@ The quantizer is llama.cpp's, so llama.cpp's perplexity measurement carries over
 | **q2_1** | **2.25** | **7.1927** | **+4.86 %** |
 
 In llama.cpp the same q2_1 cache also recalled a fact planted ~428K tokens back
-(with YaRN). In vLLM, mean draft acceptance stays at 4.4–5.1 tokens per step on
-code. Perplexity has not been re-measured on the vLLM side.
+(with YaRN). Perplexity has not been re-measured on the vLLM side.
 
-Not measured yet: 128K and 250K decode.
+Draft acceptance in vLLM, from the `/metrics` spec-decode counters. Each prompt gets
+a 512-token greedy answer and the drafter proposes 7 tokens per step. Acceptance
+length counts tokens per step, including the target's own token:
+
+| prompt | accept length | rate |
+|---|---:|---:|
+| code (4 prompts: Python, Go, TypeScript, SQL) | 3.5–5.2 | 35–61 % |
+| prose (3 prompts, one in Portuguese) | 2.6–3.1 | 22–30 % |
+| code question over 7K / 55K / 105K of C source | 5.2 / 4.5 / 4.7 | 61 / 50 / 52 % |
+
+Acceptance holds up with depth: past 55K it does not keep falling. No KVarN or int4
+acceptance was measured on the same prompts, so this table is not an A/B.
