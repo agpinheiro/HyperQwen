@@ -138,6 +138,18 @@ text**. On one RTX 3090 (WSL2, 512-token answers, a single sample of 3 runs each
 
 If the UI shows ~90 tok/s, look first at whether thinking is on.
 
+### q2_1 KV cache: 262K context on one 3090
+
+[q2_1/](q2_1/README.md) ports llama.cpp's `q2_1` KV cache type (2.25 bits per value,
+same quantizer and rotations) to vLLM's TRITON_ATTN backend as
+`--kv-cache-dtype q2_1`, and it is this fork's default: `docker-compose.override.yml`
+(merged automatically by `docker compose --profile single up -d`) serves
+`MAX_LEN=262144` with a 549,694-token pool. Code runs at 197.7 tok/s, an 8K context
+at 174.5 and a 55K one at 81.2, against 203.8, 125.1 and 45.1 for `CTX=huge`. The
+overlay bind-mounts modified vLLM files over the image's. `KV_DTYPE=int4_per_token_head`
+in `.env` goes back to the int4 cache, and `docker compose -f docker-compose.yml ...`
+to the upstream launcher.
+
 ## Which setup do I want?
 
 Three questions, and the answers are the whole of your `.env`.

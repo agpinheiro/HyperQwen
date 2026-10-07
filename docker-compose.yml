@@ -1,6 +1,7 @@
 # Qwen3.8-27B on one RTX 3090, containerized. See docs/docker.md.
 #
 #   docker compose --profile single up -d     # low latency: MTP speculative decoding
+#     (docker-compose.override.yml, merged automatically, makes it q2_1 KV at 262K context)
 #   docker compose --profile batch  up -d     # throughput
 #   docker compose run --rm prepare           # just download + requantize the model
 #   docker compose run --rm single verify     # verify.sh inside the container

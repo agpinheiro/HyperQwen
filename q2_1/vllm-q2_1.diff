@@ -1,0 +1,163 @@
+--- a/vllm/config/cache.py
++++ b/vllm/config/cache.py
+@@ -55,6 +55,7 @@
+     "kvarn_k4v2_g64",
+     "kvarn_k4v4_g64",
+     "int4_per_token_head",
++    "q2_1",
+     "int8_per_token_head",
+     "fp8_per_token_head",
+     "nvfp4",
+--- a/vllm/utils/torch_utils.py
++++ b/vllm/utils/torch_utils.py
+@@ -41,6 +41,7 @@
+     "fp8_e5m2": torch.uint8,
+     "int8": torch.int8,
+     "int4_per_token_head": torch.uint8,
++    "q2_1": torch.uint8,
+     "int8_per_token_head": torch.int8,
+     "fp8_per_token_head": torch.uint8,
+     "fp8_inc": torch.float8_e4m3fn,
+--- a/vllm/v1/attention/backends/triton_attn.py
++++ b/vllm/v1/attention/backends/triton_attn.py
+@@ -465,6 +465,12 @@
+         if spec.state_content_bytes is not None or not mode.is_per_token_head:
+             return spec
+         hs_k, hs_v = spec.head_size, spec.head_size_v
++        if mode == KVQuantMode.Q2_1:
++            from vllm.v1.attention.ops.q2_1_per_token_head import q2_1_side_bytes
++
++            # K and V halves split the content in two, so both must be the same width.
++            assert hs_k == hs_v, "q2_1 KV cache needs head_size == head_size_v"
++            return replace(spec, state_content_bytes=2 * q2_1_side_bytes(hs_k))
+         if mode == KVQuantMode.INT4_PER_TOKEN_HEAD:
+             hs_k, hs_v = hs_k // 2, hs_v // 2
+         scale_bytes = get_dtype_size(torch.float32)
+@@ -486,6 +492,7 @@
+         "int4_per_token_head",
+         "int8_per_token_head",
+         "fp8_per_token_head",
++        "q2_1",
+     ]
+ 
+     @staticmethod
+@@ -584,6 +591,13 @@
+         """
+         if self._k_scale_cache is not None:
+             return
++        if self._kv_quant_mode == KVQuantMode.Q2_1:
++            from vllm.v1.attention.ops.q2_1_per_token_head import q2_1_scale_views
++
++            self._k_scale_cache, self._v_scale_cache = q2_1_scale_views(
++                kv_cache, self.head_size
++            )
++            return
+         from vllm.utils.torch_utils import get_dtype_size
+ 
+         num_blocks, nkv, block_size, content = kv_cache.shape
+@@ -711,6 +725,11 @@
+ 
+         self._kv_quant_mode = get_kv_quant_mode(kv_cache_dtype)
+         self._is_per_token_head_quant = self._kv_quant_mode.is_per_token_head
++        if self._kv_quant_mode == KVQuantMode.Q2_1 and current_platform.is_cuda():
++            from vllm.v1.attention.ops.q2_1_per_token_head import q2_1_prepare
++
++            # Build the rotation matrices now: the first forward may be inside graph capture.
++            q2_1_prepare(head_size, torch.device("cuda", torch.cuda.current_device()))
+ 
+         # Enable tensor descriptors for Q/K/V load/store on platforms that
+         # benefit from HW 2D block reads (Intel XPU).  The dead branch
+--- a/vllm/v1/attention/ops/triton_reshape_and_cache_flash.py
++++ b/vllm/v1/attention/ops/triton_reshape_and_cache_flash.py
+@@ -289,6 +289,20 @@
+     its own kernel; INT8 / FP8 share this kernel, with the quantization
+     range (QUANT_MAX, QUANT_MIN) derived from the cache tensor dtype.
+     """
++    if kv_quant_mode == KVQuantMode.Q2_1:
++        from vllm.v1.attention.ops.q2_1_per_token_head import reshape_and_cache_q2_1
++
++        reshape_and_cache_q2_1(
++            key,
++            value,
++            key_cache,
++            value_cache,
++            slot_mapping,
++            k_scale_cache=k_scale_cache,
++            v_scale_cache=v_scale_cache,
++        )
++        return
++
+     if kv_quant_mode == KVQuantMode.INT4_PER_TOKEN_HEAD:
+         from vllm.v1.attention.ops.int4_per_token_head import (
+             reshape_and_cache_int4,
+--- a/vllm/v1/attention/ops/triton_unified_attention.py
++++ b/vllm/v1/attention/ops/triton_unified_attention.py
+@@ -883,6 +883,41 @@
+ 
+     # Sub-byte packed mode (INT4) needs a bespoke kernel (split-dot +
+     # sub-byte unpack); everything else goes through the core kernel below.
++    if kv_quant_mode == KVQuantMode.Q2_1:
++        from vllm.v1.attention.ops.q2_1_per_token_head import unified_attention_q2_1
++
++        unified_attention_q2_1(
++            q=q,
++            k_cache=k,
++            v_cache=v,
++            out=out,
++            cu_seqlens_q=cu_seqlens_q,
++            max_seqlen_q=max_seqlen_q,
++            seqused_k=seqused_k,
++            softmax_scale=softmax_scale,
++            window_size=window_size,
++            block_table=block_table,
++            softcap=softcap,
++            sinks=sinks,
++            alibi_slopes=alibi_slopes,
++            use_alibi_sqrt=use_alibi_sqrt,
++            qq_bias=qq_bias,
++            output_scale=output_scale,
++            mm_prefix_range=mm_prefix_range,
++            k_scale_cache=k_scale_cache,
++            v_scale_cache=v_scale_cache,
++            seq_threshold_3D=seq_threshold_3D,
++            max_query_len_3d=max_query_len_3d,
++            scratch_token_capacity_3d=scratch_token_capacity_3d,
++            num_par_softmax_segments=num_par_softmax_segments,
++            softmax_segm_output=softmax_segm_output,
++            softmax_segm_max=softmax_segm_max,
++            softmax_segm_expsum=softmax_segm_expsum,
++            use_causal=use_causal,
++            per_seq_causal_ptr=per_seq_causal_ptr,
++        )
++        return
++
+     if kv_quant_mode == KVQuantMode.INT4_PER_TOKEN_HEAD:
+         from vllm.v1.attention.ops.int4_per_token_head import (
+             unified_attention_int4,
+--- a/vllm/v1/kv_cache_interface.py
++++ b/vllm/v1/kv_cache_interface.py
+@@ -56,6 +56,7 @@
+     TURBOQUANT_3BIT_NC = 9
+     NVFP4_DS_MLA = 10  # opaque-bytes NVFP4 DS-MLA layouts (FlashMLA sparse)
+     KVARN = 11
++    Q2_1 = 12  # llama.cpp q2_1: 2-bit codebook, fp16 scale per 64, Hadamard-rotated
+ 
+     @property
+     def is_per_token_head(self) -> bool:
+@@ -64,6 +65,7 @@
+             KVQuantMode.INT8_PER_TOKEN_HEAD,
+             KVQuantMode.FP8_PER_TOKEN_HEAD,
+             KVQuantMode.INT4_PER_TOKEN_HEAD,
++            KVQuantMode.Q2_1,
+         )
+ 
+     @property
+@@ -91,6 +93,8 @@
+     """Map a ``kv_cache_dtype`` string to a :class:`KVQuantMode`."""
+     if kv_cache_dtype == "int4_per_token_head":
+         return KVQuantMode.INT4_PER_TOKEN_HEAD
++    if kv_cache_dtype == "q2_1":
++        return KVQuantMode.Q2_1
+     if kv_cache_dtype == "int8_per_token_head":
+         return KVQuantMode.INT8_PER_TOKEN_HEAD
+     if kv_cache_dtype == "fp8_per_token_head":
