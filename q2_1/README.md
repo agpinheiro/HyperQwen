@@ -79,5 +79,19 @@ measured on the second of two runs. q2_1's cold prefill took 7.1 s at 8K and
 85.7 s at 55K (KVarN: 63.9 s at 55K). Shared GPU memory stayed at ~76 MiB, so
 nothing paged to system RAM.
 
-Not measured yet: 128K and 250K decode, and output quality beyond draft acceptance
-(mean acceptance length 4.4–5.1 on code).
+## Quality
+
+The quantizer is llama.cpp's, so llama.cpp's perplexity measurement carries over
+(ctx 8192, 4 chunks of War and Peace, Qwen3.8-27B-Q4_K_M):
+
+| KV | bits/value | PPL | vs f16 |
+|---|---:|---:|---:|
+| f16 | 16 | 6.8594 | |
+| q4_0 | 4.5 | 6.8701 | +0.16 % |
+| **q2_1** | **2.25** | **7.1927** | **+4.86 %** |
+
+In llama.cpp the same q2_1 cache also recalled a fact planted ~428K tokens back
+(with YaRN). In vLLM, mean draft acceptance stays at 4.4–5.1 tokens per step on
+code. Perplexity has not been re-measured on the vLLM side.
+
+Not measured yet: 128K and 250K decode.
