@@ -34,26 +34,26 @@ scale is applied once per dot instead of per element.
 | `test_q2_1.py` | kernel test |
 
 The files are bind-mounted over the image's copies by
-[`docker-compose.override.yml`](../docker-compose.override.yml). Docker Compose merges
-that file automatically, so q2_1 is the default for `--profile single`; nothing is rebuilt.
+[`docker-compose.q2_1.yml`](../docker-compose.q2_1.yml), named next to the base file;
+nothing is rebuilt. (The fork's default, `docker-compose.override.yml`, runs
+`SPEC=dflash2 CTX=long` instead.)
 
 ## Run
 
 ```bash
-docker compose --profile single up -d
+docker compose -f docker-compose.yml -f docker-compose.q2_1.yml --profile single up -d
 ```
 
 The defaults are `KV_DTYPE=q2_1`, `MAX_LEN=262144` and `GPU_UTIL=0.93`. The pool is
 sized from `GPU_UTIL`, not from `KV_MEM`/`CTX`. Any of these can be set in `.env`.
 To compare against the stock int4 cache, set `KV_DTYPE=int4_per_token_head`; it runs
-the same launcher. `docker compose -f docker-compose.yml --profile single up -d`
-skips the overlay entirely.
+the same launcher.
 
 Kernel test (GPU free, server stopped; `MSYS_NO_PATHCONV=1` keeps Git Bash from
 rewriting the `/app` paths):
 
 ```bash
-MSYS_NO_PATHCONV=1 docker compose --profile single run --rm --no-deps single \
+MSYS_NO_PATHCONV=1 docker compose -f docker-compose.yml -f docker-compose.q2_1.yml --profile single run --rm --no-deps single \
     /app/venv/bin/python /app/q2_1/test_q2_1.py
 ```
 
