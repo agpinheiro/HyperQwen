@@ -1,33 +1,35 @@
-# q2_1 KV cache by default (q2_1/README.md): llama.cpp's 2.25-bit KV format on TRITON_ATTN,
-# 262,144-token context on one 24 GB card. Docker Compose merges this file automatically
-# whenever no -f is given, so `docker compose --profile single up -d` runs it.
+# SPEC=dflash2 CTX=long, int8 per-token-head KV at a 131,072-token context (perplexity +0.02%
+# against fp8, docs/gotchas.md; 136,429-token pool in the pinned 5.2 GiB). Opt-in, named
+# explicitly next to the base file:
 #
-#   KV_DTYPE=int4_per_token_head in .env            # same launcher, int4 KV (326,081-token pool)
 #   docker compose -f docker-compose.yml -f docker-compose.int8.yml --profile single up -d
-#                                                    # SPEC=dflash2 CTX=long, int8 KV at 128K instead
 #
-# Runs q2_1/alternative.sh instead of start_qwen.sh: the pool is sized from GPU_UTIL, not
-# KV_MEM/CTX, so it adapts to whatever the desktop compositor leaves free. The q2_1 vLLM
-# files are bind-mounted over the image's copies (changes: q2_1/vllm-q2_1.diff).
+# The values below win over .env, whose MAX_LEN=262144 and KV_MEM belong to CTX=huge and
+# would not boot this profile (262K does not fit a 136K pool).
 services:
   single:
-    command: ["bash", "/app/q2_1/alternative.sh"]
     restart: "no"   # starts only on `docker compose --profile single up -d`, not with Docker Desktop
     environment:
-      HOME: /cache
-      MODEL: models/Qwen3.8-27B-W4A16-AutoRound-fast
-      GPU_UTIL: ${GPU_UTIL:-0.93}
-      MAX_LEN: ${MAX_LEN:-262144}
-      KV_DTYPE: ${KV_DTYPE:-q2_1}
+      SPEC: dflash2
+      CTX: long
+      # Context and pool, settable from .env as MAX_LEN_LONG / KV_MEM_LONG (not MAX_LEN / KV_MEM,
+      # which .env keeps for CTX=huge). The pool must hold MAX_LEN: ~40,926 bytes per token.
+      MAX_LEN: "${MAX_LEN_LONG:-131072}"
+      KV_MEM: "${KV_MEM_LONG:-5583457484}"   # the launcher's CTX=long pin
+      # One request at a time (the launcher's CTX=long default is 4). The pinned pool leaves
+      # little room on a card that also runs the desktop; at 4 slots the extra graphs pushed
+      # ~600 MiB into WSL2 shared memory and empty-context decode fell to 57 tok/s (175 at 1).
+      MAX_SEQS: "${MAX_SEQS_LONG:-1}"
+      PREFIX_RETENTION: "${RETENTION_LONG-0}"  # as q2_1/alternative.sh; empty = dense
+      # Split-KV verify kernel plan for the int8 cache (int8/files/.../spec_decode_attn.py):
+      # BLOCK_M 32 / TILE 32 does not spill registers, the image's 64 / 32 spills 80.
+      # Decode on one 3090 with all of the above: 175 tok/s empty context (4 short prompts),
+      # 99 at 32K, 82 at 129K (was 57 / 13 / 4.8).
+      VLLM_SPEC_ATTN_BLOCK_M: "${SPEC_BM:-32}"
+      VLLM_SPEC_ATTN_TILE: "${SPEC_TILE:-32}"
+      VLLM_SPEC_ATTN_NSEG: "${SPEC_NSEG:-32}"
     volumes:
-      - ./q2_1:/app/q2_1:ro
-      - ./q2_1/files/vllm/utils/torch_utils.py:/app/venv/lib/python3.12/site-packages/vllm/utils/torch_utils.py:ro
-      - ./q2_1/files/vllm/config/cache.py:/app/venv/lib/python3.12/site-packages/vllm/config/cache.py:ro
-      - ./q2_1/files/vllm/v1/kv_cache_interface.py:/app/venv/lib/python3.12/site-packages/vllm/v1/kv_cache_interface.py:ro
-      - ./q2_1/files/vllm/v1/attention/backends/triton_attn.py:/app/venv/lib/python3.12/site-packages/vllm/v1/attention/backends/triton_attn.py:ro
-      - ./q2_1/files/vllm/v1/attention/ops/triton_reshape_and_cache_flash.py:/app/venv/lib/python3.12/site-packages/vllm/v1/attention/ops/triton_reshape_and_cache_flash.py:ro
-      - ./q2_1/files/vllm/v1/attention/ops/triton_unified_attention.py:/app/venv/lib/python3.12/site-packages/vllm/v1/attention/ops/triton_unified_attention.py:ro
-      - ./q2_1/files/vllm/v1/attention/ops/q2_1_per_token_head.py:/app/venv/lib/python3.12/site-packages/vllm/v1/attention/ops/q2_1_per_token_head.py:ro
+      - ./int8/files/vllm/v1/attention/ops/spec_decode_attn.py:/app/venv/lib/python3.12/site-packages/vllm/v1/attention/ops/spec_decode_attn.py:ro
 
   llamaui:
     restart: "no"
